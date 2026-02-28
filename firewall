@@ -1,0 +1,962 @@
+#!/bin/bash
+# Linux iptables tuzfal script
+#
+
+TITLE="FiReWall"
+
+IPTABLES=/sbin/iptables
+SYSCTL=/usr/sbin/sysctl
+
+EXT_IF=ppp0 #kulso interface
+#EXT_IF=net0 #kulso interface
+INT_IF=net1 #belso interface
+INT_IF_2=net2 #belso interface
+DOCKER_IF=docker0 # docker interface
+
+LOCALHOST="127.0.0.1/32"
+EXT_IP="85.66.37.45" #kulso IP cim
+INT_IP="192.168.1.1" #belso IP cim
+INT_IP_2="192.168.2.1" #belso IP cim
+#VPN_IP="192.168.10.1" #belso IP cim
+LOCALNET_1="192.168.1.0/24" #belso halozat IP cime
+LOCALNET_2="192.168.2.0/24" #belso halozat IP cime
+VPNNET_1="192.168.10.0/24" #belso halozat IP cime
+DOCKERNET_1="172.17.0.0/16" #docker halozat IP cime
+ANY="0.0.0.0/0"
+BIGBEAR="192.168.1.6"
+
+CLASS_A="10.0.0.0/8"
+CLASS_B="172.16.0.0/12"
+#CLASS_C="192.168.0.0/16"  # ez lenne az igazi, de a kabelmodem ..100.1 -es cime miatt a /24 -et hasznaljuk
+CLASS_C="192.168.0.0/24"
+CLASS_D_MULTICAST="224.0.0.0/4"
+CLASS_E_RESERVED="240.0.0.0/5"
+CLASS_F="169.254.0.0/16"
+
+DENIED_IPS=(61.31.0.0/16
+        61.140.0.0/11
+        61.220.0.0/10
+        62.165.226.178
+        62.165.227.56
+        62.165.227.223
+        62.165.225.99
+        62.165.224.86
+        62.165.215.44
+        62.165.224.241
+        62.165.215.19
+        62.165.227.41
+        62.165.227.97
+        64.12.24.161
+        66.137.176.6
+        89.132.26.222
+        86.106.44.179
+        200.195.0.0/10
+        210.73.133.22
+        210.212.0.0/16
+        218.248.35.62
+        218.188.23.45
+        218.248.35.62
+        218.13.0.0/11
+        218.160.0.0/12
+        219.80.0.0/15
+        219.128.0.0/12
+        222.156.0.0/15
+        116.31.116.45
+        116.31.116.49
+        116.31.116.43
+        88.140.168.209
+        218.92.0.237/24
+)
+
+        # A conntrack tabla meretenek nagyobbra allitasa
+#       echo 32760 > /proc/sys/net/ipv4/ip_conntrack_max
+
+        # ez azert van, hogy ne irogasson a konzolra system uzeneteket
+        dmesg -n1
+
+# A gep internet fele nyitott portjai
+to_ext_ports=(
+        4662t #EDONKEY_PORT
+        4666u #EDONKEY_PORT
+        10921 #KAD_PORT
+        5460  #OVERNET_PORT
+        6346  #GNUTELLA_PORT
+        6347  #GNUTELLA2_PORT
+        6881t #BITTORRENT_PORT
+        6882t #BITTORRENT_PORT2
+        1214  #FASTTRACK_PORT
+        9999t #OPENNAP_PORT
+        4444  #DIRECTCONNECT_PORT
+        2234t #SOULSEEK_PORT
+        6881t
+        4000t #MLDONKEY_GUI
+        4001t #MLDONKEY_TELNET
+        4080t #MLDONKEY_HTTP
+        1052u ##ddtcd dinamikus domain(1052)
+#       123u  #NTP szerver port(123)
+        #3000t #test (3000)
+        #9091t #Transmission remote gui port(9091)
+        4500u #vpn szerver (l2tp/ipsec)
+        500u  #vpn szerver (l2tp/ipsec)
+        p50   #vpn szerver (l2tp/ipsec)
+        9876t #nextcloud docker tcp port
+        9877t #nginx tcp port (guacamole)
+        2222t #shellinabox tcp port
+        #2221t #shellinabox tcp port test
+        #2223t #webssh tcp port
+        1701u "-m policy --dir in --pol ipsec" #vpn szerver (l2tp/ipsec)
+        1194u #openvpn port
+        5000t #nginx inbound port sh:2222,next:9876,fire:5800,fire2:3000,drop:4000
+        #587t  #smtp szomi.net
+        #25t   #smtp szomi.net
+)
+# A gep belso halozat fele nyitott portjai
+to_int_ports=(
+        4000t #az mldonkey iranyitasa bentrol
+        4001t #az mldonkey iranyitasa bentrol
+        4080t #az mldonkey iranyitasa bentrol
+        8878t #OpenHab bentrol
+        22t   #Belso halorol ssh (22)
+        53    #Belso halorol DNS keres (53)
+        123u  #Belso halorol a timeserver elerese (123)
+        3000t #NTOP statisztika port(3000)
+        21t   #BeLso halorol ftp (21)
+        20t   #BeLso halorol ftp (20)
+        110t  #pop3 eleres (110)
+        25t   #smtp eleres (25)
+)
+# A kulso halorol a belso halora forwardolt portok
+ext_to_int_ports=(
+#       3389t $BIGBEAR #Tavoli asztal kapcsolat(3389) forward
+#       80t   192.168.1.254 #router elerese kivulrol(80) forward
+#       21t   $BIGBEAR #belso ftp (21) forward
+#       20t   $BIGBEAR #belso ftp (20) forward
+)
+# A belso halorol kifele maskolt portok
+int_to_ext_ports=(
+        110t   #MASQ pop3
+        993t   #MASQ imap ssl
+        25t    #MASQ smtp
+        3389t  #MASQ remote desktop ki(3389)
+        80t    #MASQ web(80)
+        8080t  #MASQ applanet android(8080)
+        123u   #MASQ Belso halorol kulso timeserver elerese NTP(123)
+        443t   #MASQ https(443)
+        995t   #MASQ spop3
+        587t   #MASQ smtp2
+        465t   #MASQ smtps
+        22t    #MASQ SSH
+        21t    #MASQ FTP
+        20t    #MASQ FTP
+        873t   #rsync (873)
+        19000t #mozart radio http://classic.radio.hu (19000,18000)
+        18000t #mozart radio http://classic.radio.hu (19000,18000)
+        182t   #MASQ bulletupload.com
+        843t   #contract wars
+        5222t   #contract wars
+        27000:u #contract wars
+        4500u  #access for external cisco vpn for the internal clients UDP 4500
+        500u   #access for external cisco vpn for the internal clients UDP 500
+        p50    #access for external cisco vpn for the internal clients 50 protocoll
+        1024:t ESTABLISHED,RELATED  # passive ftp
+        2082t  #heliohost cpanel
+        icmp   #ping a belso halorol
+        all    #mindent engedunk kifele
+)
+#*********************************************************************************************
+# automatikus portnyitas
+#*********************************************************************************************
+
+# hasznalat: openport portokat_tartalmazo_tomb iptables_parancs. A parancsban a port: $port_number a port tipusa: $port_type parameterrel adhato meg
+# a host_address valtozo a port melletti esetleges ip cimet adja vissze. Pl. forwardnal lehet ra szukseg.
+# az options valtozo kulonleges iptables parametereket tartalmazhat. Ezeket egyutt idezojelbe kell tenni
+# az accept_state valtozo ertekei lehetnek: NEW,ESTABLISHED,RELATED. Fontos, hogy felsorolas eseten ne hagyjunk koztuk helyet
+# egy pelda tomb:
+
+#tombnev=(
+#       110t    # 110 tcp port (port number:110, port types:tcp)
+#       2500u   # 2500 udp port (port number:2500, port types:udp)
+#       29      # 29 tcp es udp port egyutt (port number:29, port types: tcp udp)
+#       p50     # 50-es protocol. Nem port! (nem tcp, nem udp, hanem 50) port number:"" port types:50 --dport, --sport parameter torlodik)
+#       icmp    # icmp protocol (port types: icmp)
+#       25000:u # 25000 folotti udp portok
+#       5000:   # 5000 folotti tcp es udp portok
+#       1024:t ESTABLISHED,RELATED # 1024 folotti port ESTABLISHED,RELATED statusu tcp csomagok (accept_state:ESTABLISHED,RELATED) A felsorolas kozott nem lehet space!
+#       5443t 192.168.6.25 # 5443 tcp port, host_address=192.168.6.175
+#       1701u "-m policy --dir in --pol ipsec" special iptables parancs kiegeszites a 1701-es udp portra (options:-m policy --dir in --pol ipsec)
+#)
+
+openport ()
+# hasznalat: openport portokat_tartalmazo_tomb iptables_parancs. A parancsban a port $port_number a port tipusa $port_type parameterrel adhato meg
+# a host_address valtozo a port melletti esetleges ip cimet adja vissze. Pl. forwardnal lehet ra szukseg.
+{
+
+  setvalue () # a parameterkent megkapott valtozobol megallapitja, hogy micsoda, ez annak megfeleloen beallitja a host illetve state erteket
+  {
+  if [[ $1 != *[^0-9./]* ]]; then
+    host_address=$1
+  else
+    if [[ $1 != *[^NEWSTABLIHDR,]* ]]; then
+      accept_state="-m conntrack --ctstate $1"
+  #    accept_state="-m state --state $1"
+    else
+      if [ "${1:0:1}" = "-" ]; then
+        options="$@"
+      fi
+    fi
+  fi
+  }
+
+  setport ()
+  # a parameterkent kapott szambol megallapitja, hogy tcp,udp vagy mindkettore vonatkozik, majd beallitja az ehhez tartozo valtozokat.
+  {
+    port_types="" # tcp,udp,icmp
+    port_number=""
+    host_address="$ANY"
+    accept_state=""
+    options=""
+    if [ "${1:(-1)}" = "t" ]; then  # tcp protocol
+      port_types="tcp"
+      port_number=${1:0:${#1}-1}
+    else
+      if [ "${1:(-1)}" = "u" ]; then # udp protocol
+        port_types="udp"
+        port_number=${1:0:${#1}-1}
+      else
+        if [ "$1" = "all" ]; then
+          port_types="all"
+        else
+          if [ "$1" = "icmp" ]; then
+            port_types="icmp"
+          else
+            if [ "${1:0:1}" = "p" ]; then # p> protocol
+              port_types=${1//p}
+            else   # nincs jeloles > tcp + udp
+                port_types="tcp udp"
+                port_number=$1
+#                port_types=${1#*p}
+#                port_number=${1%p*}
+            fi
+          fi
+        fi
+      fi
+    fi
+  }
+
+for (( i=0; i<`eval echo $\{#$1[@]\}`; i++ )); do # vegigmegyunk a parameterkent adott tomb elemein
+  setport `eval echo $\{$1[$i]\}`  # elso elem port/protocoll beallitas
+  while [[ `eval echo $\{$1[$i+1]\}` = *[^0-9:tuicmpal]* ]];do # amig a kovetkezo elem ujra nem port es/vagy protocoll, addig
+    setvalue `eval echo $\{$1[$i+1]\}`  # beallitjuk az egyeb valtozokat
+    i=$i+1
+  done
+
+  for port_type in $port_types; do
+    command=$2
+    if [ "$port_number" = "" ] || [ "$port_number" = ":" ]; then  # ha nincs megadva port szam, akkor nincs ertelme a --dport --sport parameternek
+      command=${2/--dport/}
+      command=${command/--sport/}
+    fi
+
+    eval "$command" # ez hajtja vegre a 2. parameterben megadott iptables parancsot
+  done
+done
+}
+
+#*********************************************************************************************
+# Szuresi lancok letrehozasa
+#*********************************************************************************************
+create_chains()
+{
+        # Beallitjuk az alapertelmezett policykat: DROP
+        # Eldobunk minden csomagot alapbol, elotte valogatunk.
+        $IPTABLES -P INPUT DROP
+        $IPTABLES -P OUTPUT DROP
+        $IPTABLES -P FORWARD DROP
+
+        # Csoportositott lancok a forgalom iranya alapjan
+
+        # a geprol az internetre meno csomagok
+        $IPTABLES -N ext_to
+        # az internetrol a gepre jovo csomagok
+        $IPTABLES -N to_ext
+        # a lokalis halozatrol az internetre meno csomagok (forward)
+        $IPTABLES -N int_to_ext
+        # az internetrol a lokalis halozatra meno csomagok (forward)
+        $IPTABLES -N ext_to_int
+        # a lokalis halozatrol a gepre jovo csomagok
+        $IPTABLES -N to_int
+        # a geprol a lokalis halozatra meno csomagok
+        $IPTABLES -N int_to
+        # szuresi lanc
+        $IPTABLES -N syn_flood
+        # input fake ip lanc
+        $IPTABLES -N i_fake_ip
+        # forward fake ip lanc
+        $IPTABLES -N f_fake_ip
+        # content filter
+        $IPTABLES -N contentfilter
+}
+#*********************************************************************************************
+# Lancok torlese
+#*********************************************************************************************
+delete_chains()
+{
+        # Tablak tisztitasa
+        $IPTABLES -F
+        $IPTABLES -X
+        $IPTABLES -F -t nat
+        $IPTABLES -X -t nat
+        $IPTABLES -F -t mangle
+        $IPTABLES -X -t mangle
+        # Csomagszzmlalok nullazasa
+        $IPTABLES -Z
+        # Minden forgalom engedelyezese
+        $IPTABLES -P INPUT ACCEPT
+        $IPTABLES -P OUTPUT ACCEPT
+        $IPTABLES -P FORWARD ACCEPT
+}
+#*********************************************************************************************
+# Atiranyitasok az uj lancokra
+#*********************************************************************************************
+basic_rules()
+{
+        # Loopbacken mindent fogadunk
+        $IPTABLES -A INPUT -i lo -j ACCEPT
+        $IPTABLES -A OUTPUT -o lo -j ACCEPT
+
+        # dockertol mindent fogadunk
+        $IPTABLES -A INPUT -i docker0 -j ACCEPT
+        $IPTABLES -A OUTPUT -o docker0 -j ACCEPT
+
+        # Bejovo csomagok, Broadcast uzenetek tiltasa a belso halorol (wake on lan-hoz kell)
+#       $IPTABLES -A INPUT -i $INT_IF -s $LOCALNET_1 -d 192.168.1.255 -j REJECT
+        $IPTABLES -A INPUT -i $INT_IF -s $LOCALNET_1 -d 255.255.255.255 -j REJECT
+        $IPTABLES -A INPUT -i $INT_IF_2 -s $LOCALNET_2 -d 255.255.255.255 -j REJECT
+        $IPTABLES -A INPUT -s $VPNNET_1 -d 255.255.255.255 -j REJECT
+        #$IPTABLES -A INPUT -s $DOCKERNET_1 -d 255.255.255.255 -j REJECT
+
+        # Bejovo csomagok
+$IPTABLES -A INPUT -i $INT_IF -s $LOCALNET_1  -j to_int
+$IPTABLES -A INPUT -i $INT_IF_2 -s $LOCALNET_2 -j to_int
+#       $IPTABLES -A INPUT -i $INT_IF -s $LOCALNET_1 -d $INT_IP -j to_int
+#       $IPTABLES -A INPUT -i $INT_IF_2 -s $LOCALNET_2 -d $INT_IP_2 -j to_int
+        $IPTABLES -A INPUT ! -i $EXT_IF,$INT_IF,$INT_IF_2 -s $VPNNET_1 -j to_int # l2tp/ipsec clienttol jovo csomagok erre a gepre
+        $IPTABLES -A INPUT -s $VPNNET_1 -m policy --dir in --pol ipsec --proto esp -j to_int # ipsec clienttol jovo csomagok erre a gepre
+        #$IPTABLES -A INPUT ! -i $EXT_IF,$INT_IF,$INT_IF_2 -s $DOCKERNET_1 -j to_int # dockertol jovo csomagok erre a gepre
+        #$IPTABLES -A INPUT -s $VPNNET_1 -d $VPN_IP -j to_int
+        $IPTABLES -A INPUT -i $EXT_IF -s $ANY -j to_ext
+#       $IPTABLES -A INPUT -j LOG --log-level debug --log-prefix "$TITLE : INPUT "
+        $IPTABLES -A INPUT -j DROP
+
+        # Kimeno csomagok
+        $IPTABLES -A OUTPUT -o $EXT_IF -j ext_to
+        $IPTABLES -A OUTPUT -o $INT_IF -d $LOCALNET_1 -j int_to
+        $IPTABLES -A OUTPUT -o $INT_IF_2 -d $LOCALNET_2 -j int_to
+        $IPTABLES -A OUTPUT -d $VPNNET_1 -j int_to
+        #$IPTABLES -A OUTPUT -d $DOCKERNET_1 -j int_to
+        $IPTABLES -A OUTPUT -j DROP
+
+        # ADSL-hez kell pppoe eseten
+        $IPTABLES -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+        # Atmeno csomagok
+# s2s vpnhez geoinform
+#$IPTABLES -A FORWARD -i $EXT_IF -s 192.168.6.0/24 -d 192.168.1.0/24 -m policy --dir in --pol ipsec --proto esp -j ACCEPT
+#$IPTABLES -A FORWARD -o $EXT_IF -s 192.168.1.0/24 -d 192.168.6.0/24 -m policy --dir out --pol ipsec --proto esp -j ACCEPT
+#$IPTABLES -A FORWARD -i $EXT_IF -s 192.168.9.0/24 -d 192.168.1.0/24 -m policy --dir in --pol ipsec --proto esp -j ACCEPT
+#$IPTABLES -A FORWARD -o $EXT_IF -s 192.168.1.0/24 -d 192.168.9.0/24 -m policy --dir out --pol ipsec --proto esp -j ACCEPT
+
+#$IPTABLES -t nat -A POSTROUTING -s 192.168.1.0/24 -o $EXT_IF -m policy --dir out --pol ipsec --proto esp -j ACCEPT
+#$IPTABLES -t nat -A PREROUTING -s 192.168.6.0/24 -i $EXT_IF -m policy --dir in --pol ipsec --proto esp -j ACCEPT
+#$IPTABLES -t nat -A PREROUTING -s 192.168.9.0/24 -i $EXT_IF -m policy --dir in --pol ipsec --proto esp -j ACCEPT
+
+# S2S VPN sdp virtualis tavoli halozattal
+#$IPTABLES -A FORWARD -i $EXT_IF -s 100.100.100.0/24 -d 192.168.1.0/24 -m policy --dir in --pol ipsec --proto esp -j ACCEPT
+#$IPTABLES -A FORWARD -o $EXT_IF -s 192.168.1.0/24 -d 100.100.100.0/24 -m policy --dir out --pol ipsec --proto esp -j ACCEPT
+
+#$IPTABLES -t nat -A POSTROUTING -s 192.168.1.0/24 -o $EXT_IF -m policy --dir out --pol ipsec --proto esp -j ACCEPT
+#$IPTABLES -t nat -A PREROUTING -s 100.100.100.0/24 -i $EXT_IF -m policy --dir in --pol ipsec --proto esp -j ACCEPT
+
+
+
+
+# ez a ket sor a halozatok atforditasat vegzi. az 1-es halot 192.168.101 nek tunteti fel a vpn iranyaba, es mindezt visszafele is.
+##$IPTABLES -t nat -A POSTROUTING -s 192.168.1.0/24 -d 192.168.10.0/24 -j NETMAP --to 192.168.101.0/24  # a 1-os halot 192.168.101.0 -nak szimulaljuk
+##$IPTABLES -t nat -A PREROUTING  -s 192.168.10.0/24 -d 192.168.101.0/24 -j NETMAP --to 192.168.1.0/24 # a 192.168.101.0 -ra erkezo csomagokat a 1-os halora iranyitjuk
+##$IPTABLES -t nat -A POSTROUTING -s 192.168.2.0/24 -d 192.168.10.0/24 -j NETMAP --to 192.168.102.0/24  # a 2-os halot 192.168.102.0 -nak szimulaljuk
+##$IPTABLES -t nat -A PREROUTING  -s 192.168.10.0/24 -d 192.168.102.0/24 -j NETMAP --to 192.168.2.0/24 # a 192.168.101.0 -ra erkezo csomagokat a 2-os halora iranyitjuk
+
+# ez a sor azert kell, hogy errol a geprol el lehessen erni a csatlakozott vpn allomast
+#$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -d 192.168.10.0/24 -j SNAT --to-source 192.168.101.1
+##$IPTABLES -t nat -A POSTROUTING -d 192.168.10.0/24 -j SNAT --to-source 192.168.101.1
+
+        ### internal network rules
+        $IPTABLES -A FORWARD -s $VPNNET_1 -d $LOCALNET_2 -m policy --dir in --pol ipsec --proto esp -j ACCEPT  # ipsec client forward
+        $IPTABLES -A FORWARD ! -i $EXT_IF,$INT_IF,$INT_IF_2 -s $VPNNET_1 -d $LOCALNET_2 -j ACCEPT  #l2tp/ipsec client forward
+        $IPTABLES -A FORWARD -s $VPNNET_1 -d $LOCALNET_1 -m policy --dir in --pol ipsec --proto esp -j ACCEPT  # ipsec client forward
+        $IPTABLES -A FORWARD ! -i $EXT_IF,$INT_IF,$INT_IF_2 -s $VPNNET_1 -d $LOCALNET_1 -j ACCEPT  #l2tp/ipsec client forward
+        $IPTABLES -A FORWARD -i $INT_IF -s $LOCALNET_1 -d $VPNNET_1 -j ACCEPT
+        $IPTABLES -A FORWARD -i $INT_IF_2 -s $LOCALNET_2 -d $VPNNET_1 -j ACCEPT
+        $IPTABLES -A FORWARD -i $INT_IF_2 -o $INT_IF -s $LOCALNET_2 -d $LOCALNET_1 -j ACCEPT ### localnet1 localnet2 comminication
+        $IPTABLES -A FORWARD -i $INT_IF -o $INT_IF_2 -s $LOCALNET_1 -d $LOCALNET_2 -j ACCEPT
+        #$IPTABLES -A FORWARD ! -i $EXT_IF,$INT_IF,$INT_IF_2 -o $INT_IF -s $DOCKERNET_1 -d $LOCALNET_1 -j ACCEPT ### docker localnet communication
+        #$IPTABLES -A FORWARD -i $INT_IF -s $LOCALNET_1 -d $DOCKERNET_1 -j ACCEPT
+        #$IPTABLES -A FORWARD ! -i $EXT_IF,$INT_IF,$INT_IF_2 -o $INT_IF_2 -s $DOCKERNET_1 -d $LOCALNET_2 -j ACCEPT
+        #$IPTABLES -A FORWARD -i $INT_IF_2 -s $LOCALNET_2 -d $DOCKERNET_1 -j ACCEPT
+
+        ### external network rules
+        $IPTABLES -A FORWARD -i $EXT_IF -o $INT_IF -d $LOCALNET_1 -j ext_to_int   ###  localnet1 internet rules
+        $IPTABLES -A FORWARD -i $INT_IF -o $EXT_IF -s $LOCALNET_1 -j int_to_ext
+        $IPTABLES -A FORWARD -i $EXT_IF -o $INT_IF_2 -d $LOCALNET_2 -j ext_to_int  ### localnet2 internet rules
+        $IPTABLES -A FORWARD -i $INT_IF_2 -o $EXT_IF -s $LOCALNET_2 -j int_to_ext
+        $IPTABLES -A FORWARD -i $DOCKER_IF -o $EXT_IF -s $DOCKERNET_1 -j int_to_ext ### docker internet rules
+        $IPTABLES -A FORWARD -i $EXT_IF -o $DOCKER_IF -d $DOCKERNET_1 -j ext_to_int
+        $IPTABLES -A FORWARD -s $VPNNET_1 -d $VPNNET_1 -j ACCEPT
+#       $IPTABLES -A FORWARD -j LOG --log-level debug --log-prefix "$TITLE : fp=Forward:1 a=DROP "
+
+
+        $IPTABLES -A FORWARD -j DROP
+}
+#*********************************************************************************************
+# Az internetrol a tuzfalra erkezo csomagok
+#*********************************************************************************************
+to_ext()
+{
+        # Tiltott IP-k szurese
+        for (( i=0; i<${#DENIED_IPS[@]}; i++ )); do
+          $IPTABLES -A to_ext -s ${DENIED_IPS[$i]} -j DROP
+        done
+
+        # Hamisitott IP-k szurese (sysctl-k bebiztositasa)
+        $IPTABLES -A to_ext -s $CLASS_A -j i_fake_ip
+        $IPTABLES -A to_ext -s $CLASS_B -j i_fake_ip
+        $IPTABLES -A to_ext -s $CLASS_C -j i_fake_ip
+        $IPTABLES -A to_ext -s $CLASS_D_MULTICAST -j i_fake_ip
+        $IPTABLES -A to_ext -s $CLASS_E_RESERVED -j i_fake_ip
+        $IPTABLES -A to_ext -s $CLASS_F -j i_fake_ip
+        $IPTABLES -A i_fake_ip -m limit --limit 1/m -j LOG --log-prefix "$TITLE : (I)fake IP source " --log-level 7
+        $IPTABLES -A i_fake_ip -j DROP
+
+        # SYN-Flood
+#       $IPTABLES -A to_ext -p tcp --syn -j syn_flood
+#       $IPTABLES -A syn_flood -m limit --limit 5/s --limit-burst 4 -j RETURN
+#       $IPTABLES -A syn_flood -j LOG --log-prefix "$TITLE : (I)SYN-Flood " --log-level 7
+#       $IPTABLES -A syn_flood -j DROP
+
+        # Fragments : Don't trust the little buggers. Send 'em to hell.
+        $IPTABLES -A to_ext -f -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)Fragments " --log-level 7
+        $IPTABLES -A to_ext -f -j DROP
+
+        # Nmap FIN/URG/PSH
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN,URG,PSH -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)Nmap XMAS scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN,URG,PSH -j DROP
+
+        # Nmap Stealth XMAS-PSH scan
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)XMAS-PSH scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
+
+        # NMAP FIN Stealth
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)FIN scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN -j DROP
+
+        # SYN/RST
+        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,RST SYN,RST -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)SYN/RST scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
+
+        # SYN/FIN
+        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,FIN SYN,FIN -m limit --limit 5/m -j LOG  --log-prefix "$TITLE : (I)SYN/FIN scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
+
+        # Portscan,PoD
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL ALL -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)XMAS-tree scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL ALL -j DROP
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)NULL scan  " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -j DROP
+
+        # Half-open scan elleni vedelem
+        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 5/s -j LOG  --log-prefix "$TITLE : (I)H-open p-scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,ACK,FIN,RST RST -j DROP
+
+        # Log packets with bad flags
+        $IPTABLES -A to_ext -p tcp --tcp-option 64 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (I)Bad TCP f(64) " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-option 64 -j DROP
+        $IPTABLES -A to_ext -p tcp --tcp-option 128 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (I)Bad TCP f(128) " --log-level 7
+        $IPTABLES -A to_ext -p tcp --tcp-option 128 -j DROP
+
+        # Log invalid packets
+        $IPTABLES -A to_ext -p tcp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (I)INVALID TCP " --log-level 7
+        $IPTABLES -A to_ext -p udp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (I)INVALID UDP " --log-level 7
+        $IPTABLES -A to_ext -p icmp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (I)INVALID ICMP " --log-level 7
+        $IPTABLES -A to_ext -m conntrack --ctstate INVALID -j DROP
+
+        # PING -re ne valaszoljunk
+        $IPTABLES -A to_ext -m conntrack --ctstate NEW -p icmp -j DROP
+
+        # Ha megis valaszolnank a pingre, akkor limitaljuk a gyakorisagat
+        $IPTABLES -A to_ext -p icmp --icmp-type echo-request -m limit --limit 3/s -j ACCEPT
+        $IPTABLES -A to_ext -p icmp --icmp-type echo-request -j LOG --log-prefix "$TITLE : (I)PoD attack " --log-level 7
+        $IPTABLES -A to_ext -p icmp --icmp-type echo-request -j DROP
+
+        # Az uj kapcsolatok helyesen kezdodjenek ( kozvetett DoS )
+        $IPTABLES -A to_ext -p tcp ! --syn -m conntrack --ctstate NEW -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)hidden p-scan " --log-level 7
+        $IPTABLES -A to_ext -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+
+        # Az internetrol jovo valaszcsomagok  csomagok
+        $IPTABLES -A to_ext -s $ANY -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+#  ************* Szolgaltatasok engedelyezese (nyitott portok) ************
+
+        #SSH szerver (22) (harmadik belepes utan 5 perc letiltas)
+        $IPTABLES -A to_ext -s $ANY -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --update --seconds 300 --hitcount 2 --name SSH -j DROP
+        $IPTABLES -A to_ext -s $ANY -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --set --name SSH -j ACCEPT
+#       $IPTABLES -A to_ext -s $ANY -p tcp --dport ssh -j ACCEPT
+
+        # l2tp/ipsec vpn befele
+        #$IPTABLES -A to_ext -s $ANY -p udp --dport 500 -j ACCEPT
+        #$IPTABLES -A to_ext -s $ANY -p udp --dport 4500 -j ACCEPT
+        #$IPTABLES -A to_ext -s $ANY -p 50 -j ACCEPT
+        #$IPTABLES -A to_ext -s $ANY -p udp --dport 1701 -m policy --dir in --pol ipsec -j ACCEPT
+        #$IPTABLES -A to_ext -s $ANY -p udp --dport 1701 -j LOG --log-level debug --log-prefix "$TITLE : 1701-es port "
+
+        openport to_ext_ports "$IPTABLES -A to_ext -s $ANY -p \$port_type --dport \$port_number \$options -j ACCEPT"
+
+        # A tobbi logolasa, tiltasa
+#       $IPTABLES -A to_ext -j LOG --log-level debug --log-prefix "$TITLE : fp=ext-if:1 a=DROP "
+        $IPTABLES -A to_ext -j DROP
+}
+#*********************************************************************************************
+# Az internetrol a LAN-ra tovabbitott csomagok
+#*********************************************************************************************
+ext_to_int()
+{
+        # Tiltott IP-k szurese
+        for (( i=0; i<${#DENIED_IPS[@]}; i++ )); do
+          $IPTABLES -A ext_to_int -s ${DENIED_IPS[$i]} -j DROP
+        done
+
+        # Hamisitott IP-k szurese (sysctl-k bebiztositasa)
+        $IPTABLES -A ext_to_int -s $CLASS_A -j f_fake_ip
+        $IPTABLES -A ext_to_int -s $CLASS_B -j f_fake_ip
+        $IPTABLES -A ext_to_int -s $CLASS_C -j f_fake_ip
+        $IPTABLES -A ext_to_int -s $CLASS_D_MULTICAST -j f_fake_ip
+        $IPTABLES -A ext_to_int -s $CLASS_E_RESERVED -j f_fake_ip
+        $IPTABLES -A ext_to_int -s $CLASS_F -j f_fake_ip
+        $IPTABLES -A f_fake_ip -m limit --limit 1/m -j LOG --log-prefix "$TITLE : (F)fake IP source " --log-level 7
+        $IPTABLES -A f_fake_ip -j DROP
+
+        # SYN-Flood
+        $IPTABLES -A ext_to_int -p tcp --syn -j syn_flood
+        $IPTABLES -A syn_flood -m limit --limit 5/s --limit-burst 4 -j RETURN
+        $IPTABLES -A syn_flood -j LOG --log-prefix "$TITLE : (F)SYN-Flood " --log-level 7
+        $IPTABLES -A syn_flood -j DROP
+
+        # Fragments : Don't trust the little buggers. Send 'em to hell.
+        $IPTABLES -A ext_to_int -f -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)Fragments " --log-level 7
+        $IPTABLES -A ext_to_int -f -j DROP
+
+        # Nmap FIN/URG/PSH
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN,URG,PSH -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)Nmap XMAS scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN,URG,PSH -j DROP
+
+        # Nmap Stealth XMAS-PSH scan
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)XMAS-PSH scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
+
+        # NMAP FIN Stealth
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)FIN scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN -j DROP
+
+
+        # SYN/RST
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,RST SYN,RST -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)SYN/RST scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
+
+        #SYN/FIN
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,FIN SYN,FIN -m limit --limit 5/m -j LOG  --log-prefix "$TITLE : (F)SYN/FIN scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
+
+        # Portscan,PoD
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL ALL -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)XMAS-tree scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL ALL -j DROP
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)NULL scan  " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -j DROP
+
+        # Half open scan elleni vedelem
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 5/s -j LOG  --log-prefix "$TITLE : (F)H-open p-scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,ACK,FIN,RST RST -j DROP
+
+        # Log packets with bad flags
+        $IPTABLES -A ext_to_int -p tcp --tcp-option 64 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (F)Bad TCP f(64) " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-option 64 -j DROP
+        $IPTABLES -A ext_to_int -p tcp --tcp-option 128 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (F)Bad TCP f(128) " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp --tcp-option 128 -j DROP
+
+        # Log invalid packets
+        $IPTABLES -A to_ext -p tcp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (F)INVALID TCP " --log-level 7
+        $IPTABLES -A to_ext -p udp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (F)INVALID UDP " --log-level 7
+        $IPTABLES -A to_ext -p icmp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (F)INVALID ICMP " --log-level 7
+        $IPTABLES -A to_ext -m conntrack --ctstate INVALID -j DROP
+
+        # PING -re ne valaszoljunk
+        $IPTABLES -A ext_to_int -m conntrack --ctstate NEW -p icmp -j DROP
+
+        # Ha megis valaszolnank a pingre, akkor limitaljuk a gyakorisagat
+        $IPTABLES -A ext_to_int -p icmp --icmp-type echo-request -m limit --limit 3/s -j ACCEPT
+        $IPTABLES -A ext_to_int -p icmp --icmp-type echo-request -j LOG --log-prefix "$TITLE : (F)PoD attack " --log-level 7
+        $IPTABLES -A ext_to_int -p icmp --icmp-type echo-request -j DROP
+
+        # Az uj kapcsolatok helyesen kezdodjenek ( k▒zvetett DoS )
+        $IPTABLES -A ext_to_int -p tcp ! --syn -m conntrack --ctstate NEW -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)hidden p-scan " --log-level 7
+        $IPTABLES -A ext_to_int -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+
+#  ************* Szolgaltatasok engedelyezese (nyitott portok) ************
+
+        # Jovahagyott kapcsolatok elfogadasa
+        #$IPTABLES -A ext_to_int -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        #a netrol a belso halora jovo csomagok a forward szabalyai
+
+        #Minden valaszt engedelyezunk a belso MASQ -kra
+        #$IPTABLES -A ext_to_int -s $ANY -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        #$IPTABLES -A ext_to_int -s $ANY -p icmp -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        # Az ext_to_int tombben megadott portok forwardolasa
+        openport ext_to_int_ports "$IPTABLES -A ext_to_int -s $ANY -d \$host_address -p \$port_type --dport \$port_number -j ACCEPT"
+
+        # Az int_to_ext tombben megadott portok valaszai
+        openport int_to_ext_ports "$IPTABLES -A ext_to_int -s $ANY -p \$port_type --sport \$port_number -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+
+        #MASQ VPN valaszok (PPTP)
+        #$IPTABLES -A ext_to_int -s $ANY -p tcp --sport 1723 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        #$IPTABLES -A ext_to_int -s $ANY -p 47 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        #cisco VPN valaszok
+        #$IPTABLES -A ext_to_int -s $ANY -p udp --sport 1701 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        #$IPTABLES -A ext_to_int -s $ANY -p udp --sport 4500 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        #$IPTABLES -A ext_to_int -s $ANY -p udp --sport 500 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        #$IPTABLES -A ext_to_int -s $ANY -p 50 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+#$IPTABLES -A ext_to_int -s $ANY  -p TCP --sport 1024: -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        #A tobbi logolasa, tiltasa
+#       $IPTABLES -A ext_to_int -j LOG --log-level debug --log-prefix "$TITLE : fp=ext_to_int:1 a=DROP "
+        $IPTABLES -A ext_to_int -j DROP
+
+}
+#*********************************************************************************************
+# A LAN-rol a tuzfalra erkezo csomagok
+#*********************************************************************************************
+to_int()
+{
+        # Ha mindent engedunk
+        $IPTABLES -A to_int -j ACCEPT
+
+        openport to_int_ports "$IPTABLES -A to_int -p \$port_type --dport \$port_number -j ACCEPT"
+
+        #Pingeles a belso halorol max masodpercenkent 1 ping
+        $IPTABLES -A to_int -p ICMP -m limit --limit 1/s -j ACCEPT
+
+        #Valaszcsomagok a belso halorol
+        $IPTABLES -A to_int -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        #A tobbi csomag logolasa, tiltasa
+#       $IPTABLES -A to_int -j LOG --log-level debug --log-prefix "$TITLE : fp=to_int:1 a=DROP "
+        $IPTABLES -A to_int -j DROP
+
+}
+#*********************************************************************************************
+# A LAN-rol az internetre kuldott csomagok
+#*********************************************************************************************
+int_to_ext()
+{
+        # Ha mindent engedunk
+        #$IPTABLES -A int_to_ext -j ACCEPT
+
+        #$IPTABLES -A int_to_ext -p icmp -d $ANY -j ACCEPT
+
+        # default rule for contentfilter chain
+        $IPTABLES -A contentfilter -j ACCEPT
+        # Az int_to_ext tombben megadott portok forwardolasa
+        openport int_to_ext_ports "$IPTABLES -A int_to_ext -p \$port_type -d $ANY --dport \$port_number \$accept_state -j contentfilter"
+
+        # Az ext_to_int tombben megadott portok valaszai
+        openport ext_to_int_ports "$IPTABLES -A int_to_ext -p \$port_type -s \$host_address -d $ANY --sport \$port_number -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+
+        # passive ftphez a belso halozatrol (kell meg az ip_conntrack_ftp module is)
+        #$IPTABLES -A int_to_ext -p TCP -d $ANY --dport 1024: -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        #MASQ VPN (PPTP)
+        #$IPTABLES -A int_to_ext -p TCP -d $ANY --dport 1723 -j ACCEPT
+        #$IPTABLES -A int_to_ext -p 47 -d $ANY -j ACCEPT
+
+        #cisco VPN
+        #$IPTABLES -A int_to_ext -p UDP -d $ANY --dport 1701 -j ACCEPT
+        #$IPTABLES -A int_to_ext -p UDP -d $ANY --dport 4500 -j ACCEPT
+        #$IPTABLES -A int_to_ext -p UDP -d $ANY --dport 500 -j ACCEPT
+        #$IPTABLES -A int_to_ext -p 50 -d $ANY -j ACCEPT
+
+        #A tobbi logolasa, tiltasa
+#       $IPTABLES -A int_to_ext -j LOG --log-level debug --log-prefix "$TITLE : fp=int_to_ext:1 a=DROP "
+        $IPTABLES -A int_to_ext -j DROP
+}
+#*********************************************************************************************
+# A tuzfalrol a LAN-ra kuldott csomagok
+#*********************************************************************************************
+int_to()
+{
+        # Ha mindent enged▒nk
+#       $IPTABLES -A int_to -j ACCEPT
+
+        # Az uj, a valasz, es a mar letrehozott kapcsolat csomagjai engedelyezettek kifele
+        $IPTABLES -A int_to -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT
+
+        #A tobbi kifele iranyulo csomag logolva, illetve tiltva
+#       $IPTABLES -A int_to -j LOG --log-level debug --log-prefix "$TITLE : fp=int_to:1 a=DROP "
+        $IPTABLES -A int_to -j DROP
+
+}
+#*********************************************************************************************
+# A tuzfalrol az internetre kuldott csomagok
+#*********************************************************************************************
+ext_to()
+{
+        # Ha mindent enged▒nk
+#       $IPTABLES -A ext_to -j ACCEPT
+
+        # Az uj, a valasz, es a mar letrehozott kapcsolat csomagjai engedelyezettek kifele
+        $IPTABLES -A ext_to -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT
+
+        #A tobbi kifele iranyulo csomag logolva, illetve tiltva
+#       $IPTABLES -A ext_to -j LOG --log-level debug --log-prefix "$TITLE : fp=ext_to:1 a=DROP "
+        $IPTABLES -A ext_to -j DROP
+
+}
+#*********************************************************************************************
+# Internet megosztasa a LAN szamara
+#*********************************************************************************************
+nat()
+{
+#***** PREROUTING ***** a kintrol befele kapcsolodashoz
+
+        # Az ext_to_int tombben megadott portok atiranyitasa egy belso cimre
+        openport ext_to_int_ports "$IPTABLES -t nat -A PREROUTING -i $EXT_IF -p \$port_type -s $ANY --dport \$port_number -j DNAT --to \$host_address"
+
+        #VPN 2 preroute
+        #$IPTABLES -t nat -A PREROUTING -i $EXT_IF -p UDP -s $ANY --dport 500 -j DNAT --to $BIGBEAR
+        #$IPTABLES -t nat -A PREROUTING -i $EXT_IF -p 50 -s $ANY -j DNAT --to $BIGBEAR
+
+        # a router kivulrol valo eleresehez alcazni kell a kulso ip cimet
+#       $IPTABLES -t nat -A PREROUTING -i $EXT_IF -p TCP -s $ANY --dport 80 -j DNAT --to 192.168.1.254:80
+#       $IPTABLES -t nat -A POSTROUTING -o $INT_IF -p TCP -s $ANY --dport 80 -j SNAT --to-source 192.168.1.1
+
+#***** POSTROUTING ***** a bentrol kifele kapcsolodashoz
+
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p icmp -d $ANY -j MASQUERADE
+
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p TCP -s $LOCALNET_1 -d $ANY --dport 1024: -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p TCP -s $LOCALNET_2 -d $ANY --dport 1024: -j MASQUERADE
+
+        # Ezek a szabalyok a cimforditasra vonatkoznak (fontos, hogy meglegyen a hozzajuk tartozo forward szabaly)
+
+        # Ezzel minden belso halorol kifele iranyulo forgalmat MASQUERADE -zunk
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -s $LOCALNET_1 -d $ANY -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -s $LOCALNET_2 -d $ANY -j MASQUERADE
+
+        # Az int_to_ext tombben megadott portok maszkolasa
+        openport int_to_ext_ports "$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p \$port_type -s $LOCALNET_1 -d $ANY --dport \$port_number -j MASQUERADE"
+        openport int_to_ext_ports "$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p \$port_type -s $LOCALNET_2 -d $ANY --dport \$port_number -j MASQUERADE"
+        openport int_to_ext_ports "$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p \$port_type -s $VPNNET_1 -d $ANY --dport \$port_number -j MASQUERADE"
+        openport int_to_ext_ports "$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p \$port_type -s $DOCKERNET_1 -d $ANY --dport \$port_number -j MASQUERADE"
+
+        # MASQ VPN pptp
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p TCP -s $LOCALNET_1 -d $ANY --dport 1723 -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p 47 -s $LOCALNET_1 -d $ANY -j MASQUERADE
+
+        # MASQ VPN cisco
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p UDP -s $LOCALNET_1 -d $ANY --dport 1701 -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p UDP -s $LOCALNET_1 -d $ANY --dport 4500 -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p UDP -s $LOCALNET_1 -d $ANY --dport 500 -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p 50 -s $LOCALNET_1 -d $ANY -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p UDP -s $LOCALNET_2 -d $ANY --dport 4500 -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p UDP -s $LOCALNET_2 -d $ANY --dport 500 -j MASQUERADE
+        #$IPTABLES -t nat -A POSTROUTING -o $EXT_IF -p 50 -s $LOCALNET_2 -d $ANY -j MASQUERADE
+}
+#*********************************************************************************************
+# Sysctl beallitasok a /proc fajlrendszeren
+#*********************************************************************************************
+sysctls()
+{
+        # ICMP redirect fogadasanak kikapcsolasa
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.accept_redirects=0 > /dev/null;
+        done
+        #$SYSCTL -w net.ipv4.conf.all.accept_redirects=0 > /dev/null
+
+        # A forras-routolasi csomagok kikapcsolasa
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.accept_source_route=0 > /dev/null;
+        done
+        #$SYSCTL -w net.ipv4.conf.all.accept_source_route=0 > /dev/null
+
+        # A lehetetlen IP rol jovo csomagok loggolasa
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.log_martians=1 > /dev/null;
+        done
+        #$SYSCTL -w net.ipv4.conf.all.log_martians=1 > /dev/null
+
+        # Routolasi haromszogeles illetve ip spoofing vedelem
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.rp_filter=1 > /dev/null;
+        done
+        #$SYSCTL -w net.ipv4.conf.all.rp_filter=1 > /dev/null
+
+        # ICMP redirect engedelyezese az atjaroknak
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.secure_redirects=1 > /dev/null;
+        done
+        #$SYSCTL -w net.ipv4.conf.all.secure_redirects=1 > /dev/null
+
+        # ICMP redirect kikapcsolasa
+        # Ha a g▒p router, ▒rjuk ▒t 1-re, ▒s a t▒bbi host kap ICMP redirect-t
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.send_redirects=0 > /dev/null;
+        done
+        #$SYSCTL -w net.ipv4.conf.all.send_redirects=0 > /dev/null
+
+        # PING-re valaszolunk - majd a lancokon szurjuk/kikapcsolhatjuk
+        $SYSCTL -w net.ipv4.icmp_echo_ignore_all=0 > /dev/null
+        # Ne valaszoljunk a broadcast PING-re
+        $SYSCTL -w net.ipv4.icmp_echo_ignore_broadcasts=1 > /dev/null
+        # Ne loggoljuk a hibas router broadcastokat
+        $SYSCTL -w net.ipv4.icmp_ignore_bogus_error_responses=1 > /dev/null
+        # IP routolas engedelyezese NAT-hoz
+        $SYSCTL -w net.ipv4.ip_forward=1 > /dev/null
+}
+#*********************************************************************************************
+# Sysctl visszaallitasok
+#*********************************************************************************************
+unsysctls()
+{
+        # Default ertekeket visszaallitjuk
+        #  --- meg jobb lenne: config fajlban elmenteni a tuzfal elotti beallitasokat, es onnan visszamenteni! ---
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.accept_redirects=1 > /dev/null;
+        done
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.accept_source_route=0 > /dev/null;
+        done
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.log_martians=0 > /dev/null;
+        done
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.rp_filter=0 > /dev/null;
+        done
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.secure_redirects=1 > /dev/null;
+        done
+        for f in /proc/sys/net/ipv4/conf/*; do
+                $SYSCTL -w net.ipv4.conf.`basename $f`.send_redirects=1 > /dev/null;
+        done
+        $SYSCTL -w net.ipv4.icmp_echo_ignore_all=0 > /dev/null
+        $SYSCTL -w net.ipv4.icmp_echo_ignore_broadcasts=0 > /dev/null
+        $SYSCTL -w net.ipv4.icmp_ignore_bogus_error_responses=0 > /dev/null
+        $SYSCTL -w net.ipv4.ip_forward=0 > /dev/null
+}
+#*********************************************************************************************
+# TOS beallitasok
+#*********************************************************************************************
+tos()
+{
+
+        # e geprol indulo csomagok
+        $IPTABLES -t mangle -A OUTPUT -p tcp --dport ssh -j TOS --set-tos Minimize-Delay
+        $IPTABLES -t mangle -A OUTPUT -p tcp --dport smtp -j TOS --set-tos Minimize-Cost
+        $IPTABLES -t mangle -A OUTPUT -p tcp --dport www -j TOS --set-tos Maximize-Throughput
+        # e geprol indulo valaszcsomagok
+        $IPTABLES -t mangle -A OUTPUT -p tcp --sport ssh -j TOS --set-tos Minimize-Delay
+        $IPTABLES -t mangle -A OUTPUT -p tcp --sport smtp -j TOS --set-tos Minimize-Cost
+        $IPTABLES -t mangle -A OUTPUT -p tcp --sport www -j TOS --set-tos Maximize-Throughput
+        # Ez a gep elsodlegesen web, mail es proxy szerver, ezert az atmeno
+        # csomagok TOS-an nem modositok. Azt a PREROUTING mangle tablan lehetne.
+
+        #PREROUTING mangle
+        # MASQ csomagok kifele
+        $IPTABLES -t mangle -A PREROUTING -p tcp --dport ssh -j TOS --set-tos Minimize-Delay
+        $IPTABLES -t mangle -A PREROUTING -p tcp --dport smtp -j TOS --set-tos Minimize-Cost
+        $IPTABLES -t mangle -A PREROUTING -p tcp --dport www -j TOS --set-tos Maximize-Throughput
+        # e geprol indulo valaszcsomagok
+        $IPTABLES -t mangle -A PREROUTING -p tcp --sport ssh -j TOS --set-tos Minimize-Delay
+        $IPTABLES -t mangle -A PREROUTING -p tcp --sport smtp -j TOS --set-tos Minimize-Cost
+        $IPTABLES -t mangle -A PREROUTING -p tcp --sport www -j TOS --set-tos Maximize-Throughput
+
+}
+#*********************************************************************************************
+#*********************************************************************************************
+#*********************************************************************************************
+
+case "$1" in
+start)
+        if [ ! -x $IPTABLES ]; then
+                echo "No iptables found so not starting firewall..."
+                exit 1
+        fi
+        echo " * Starting Firewall..."
+        sysctls
+        delete_chains
+        create_chains
+        basic_rules
+        to_ext
+        ext_to_int
+        to_int
+        int_to_ext
+        int_to
+        ext_to
+        nat
+#       tos             # ezt a savszeleseg korlatozasokhoz kellene... nemi tc-vel kiegeszitve
+        echo " OK."
+;;
+stop)
+        echo " * Stopping Firewall..."
+        delete_chains
+        unsysctls
+;;
+restart)
+        $0 stop
+        sleep 1
+        $0 start
+;;
+forward)
+        $0 stop
+        echo 1 >/proc/sys/net/ipv4/ip_forward
+        PARAM=$2
+        iptables -t nat -A POSTROUTING -o $EXT_IF -j MASQUERADE
+        if [ "$PARAM" = "" ]
+        then
+                PARAM=$BIGBEAR
+        fi
+        iptables -t nat -A PREROUTING -i $EXT_IF -s $ANY -j DNAT --to $PARAM
+        #iptables -A FORWARD -i $EXT_IF -s $ANY -j ACCEPT
+        #iptables -A FORWARD -i $INT_IF -o $EXT_IF -j ACCEPT
+        echo "Everything Forwarded to $PARAM"
+;;
+block)
+        echo " * Locking System & LAN from Internet access..."
+        delete_chains
+        iptables -P INPUT DROP
+        iptables -P OUTPUT DROP
+        iptables -P FORWARD DROP
+        echo "Firewall Blocked..."
+;;
+status)
+        echo '------------- Filter lancok -------------'
+        iptables -L -n -v
+        echo '------------- NAT lancok -------------'
+        iptables -L -n -t nat -v
+        echo '------------- Mangle lancok -------------'
+        iptables -L -n -t mangle -v
+;;
+*)
+        echo "Usage : $0 {start|stop|forward [ip]|restart|lock|status}"
+        exit 1
+;;
+esac
