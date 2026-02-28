@@ -432,7 +432,7 @@ to_ext()
         $IPTABLES -A to_ext -m conntrack --ctstate INVALID -j DROP
 
         # PING -re ne valaszoljunk
-        $IPTABLES -A to_ext -m conntrack --ctstate NEW -p icmp -j DROP
+        # $IPTABLES -A to_ext -m conntrack --ctstate NEW -p icmp -j DROP
 
         # Ha megis valaszolnank a pingre, akkor limitaljuk a gyakorisagat
         $IPTABLES -A to_ext -p icmp --icmp-type echo-request -m limit --limit 3/s -j ACCEPT
@@ -484,7 +484,7 @@ ext_to_int()
         $IPTABLES -A to_ext -m conntrack --ctstate INVALID -j DROP
 
         # PING -re ne valaszoljunk
-        $IPTABLES -A ext_to_int -m conntrack --ctstate NEW -p icmp -j DROP
+        # $IPTABLES -A ext_to_int -m conntrack --ctstate NEW -p icmp -j DROP
 
         # Ha megis valaszolnank a pingre, akkor limitaljuk a gyakorisagat
         $IPTABLES -A ext_to_int -p icmp --icmp-type echo-request -m limit --limit 3/s -j ACCEPT
