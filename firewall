@@ -1,5 +1,8 @@
 #!/bin/bash
 # Linux iptables tuzfal script
+# K▒sz▒tette : Veress Krisztian
+#              veresskrisztian@freemail.hu
+# D▒tum : 2006.06.03
 #
 
 TITLE="FiReWall"
@@ -287,12 +290,6 @@ create_chains()
         $IPTABLES -N to_int
         # a geprol a lokalis halozatra meno csomagok
         $IPTABLES -N int_to
-        # szuresi lanc
-        $IPTABLES -N syn_flood
-        # input fake ip lanc
-        $IPTABLES -N i_fake_ip
-        # forward fake ip lanc
-        $IPTABLES -N f_fake_ip
         # content filter
         $IPTABLES -N contentfilter
 }
@@ -427,61 +424,6 @@ to_ext()
           $IPTABLES -A to_ext -s ${DENIED_IPS[$i]} -j DROP
         done
 
-        # Hamisitott IP-k szurese (sysctl-k bebiztositasa)
-        $IPTABLES -A to_ext -s $CLASS_A -j i_fake_ip
-        $IPTABLES -A to_ext -s $CLASS_B -j i_fake_ip
-        $IPTABLES -A to_ext -s $CLASS_C -j i_fake_ip
-        $IPTABLES -A to_ext -s $CLASS_D_MULTICAST -j i_fake_ip
-        $IPTABLES -A to_ext -s $CLASS_E_RESERVED -j i_fake_ip
-        $IPTABLES -A to_ext -s $CLASS_F -j i_fake_ip
-        $IPTABLES -A i_fake_ip -m limit --limit 1/m -j LOG --log-prefix "$TITLE : (I)fake IP source " --log-level 7
-        $IPTABLES -A i_fake_ip -j DROP
-
-        # SYN-Flood
-#       $IPTABLES -A to_ext -p tcp --syn -j syn_flood
-#       $IPTABLES -A syn_flood -m limit --limit 5/s --limit-burst 4 -j RETURN
-#       $IPTABLES -A syn_flood -j LOG --log-prefix "$TITLE : (I)SYN-Flood " --log-level 7
-#       $IPTABLES -A syn_flood -j DROP
-
-        # Fragments : Don't trust the little buggers. Send 'em to hell.
-        $IPTABLES -A to_ext -f -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)Fragments " --log-level 7
-        $IPTABLES -A to_ext -f -j DROP
-
-        # Nmap FIN/URG/PSH
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN,URG,PSH -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)Nmap XMAS scan " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN,URG,PSH -j DROP
-
-        # Nmap Stealth XMAS-PSH scan
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)XMAS-PSH scan " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
-
-        # NMAP FIN Stealth
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)FIN scan " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL FIN -j DROP
-
-        # SYN/RST
-        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,RST SYN,RST -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)SYN/RST scan " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
-
-        # SYN/FIN
-        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,FIN SYN,FIN -m limit --limit 5/m -j LOG  --log-prefix "$TITLE : (I)SYN/FIN scan " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
-
-        # Portscan,PoD
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL ALL -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)XMAS-tree scan " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL ALL -j DROP
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (I)NULL scan  " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -j DROP
-
-        # Half-open scan elleni vedelem
-        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 5/s -j LOG  --log-prefix "$TITLE : (I)H-open p-scan " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-flags SYN,ACK,FIN,RST RST -j DROP
-
-        # Log packets with bad flags
-        $IPTABLES -A to_ext -p tcp --tcp-option 64 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (I)Bad TCP f(64) " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-option 64 -j DROP
-        $IPTABLES -A to_ext -p tcp --tcp-option 128 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (I)Bad TCP f(128) " --log-level 7
-        $IPTABLES -A to_ext -p tcp --tcp-option 128 -j DROP
 
         # Log invalid packets
         $IPTABLES -A to_ext -p tcp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (I)INVALID TCP " --log-level 7
@@ -534,62 +476,6 @@ ext_to_int()
           $IPTABLES -A ext_to_int -s ${DENIED_IPS[$i]} -j DROP
         done
 
-        # Hamisitott IP-k szurese (sysctl-k bebiztositasa)
-        $IPTABLES -A ext_to_int -s $CLASS_A -j f_fake_ip
-        $IPTABLES -A ext_to_int -s $CLASS_B -j f_fake_ip
-        $IPTABLES -A ext_to_int -s $CLASS_C -j f_fake_ip
-        $IPTABLES -A ext_to_int -s $CLASS_D_MULTICAST -j f_fake_ip
-        $IPTABLES -A ext_to_int -s $CLASS_E_RESERVED -j f_fake_ip
-        $IPTABLES -A ext_to_int -s $CLASS_F -j f_fake_ip
-        $IPTABLES -A f_fake_ip -m limit --limit 1/m -j LOG --log-prefix "$TITLE : (F)fake IP source " --log-level 7
-        $IPTABLES -A f_fake_ip -j DROP
-
-        # SYN-Flood
-        $IPTABLES -A ext_to_int -p tcp --syn -j syn_flood
-        $IPTABLES -A syn_flood -m limit --limit 5/s --limit-burst 4 -j RETURN
-        $IPTABLES -A syn_flood -j LOG --log-prefix "$TITLE : (F)SYN-Flood " --log-level 7
-        $IPTABLES -A syn_flood -j DROP
-
-        # Fragments : Don't trust the little buggers. Send 'em to hell.
-        $IPTABLES -A ext_to_int -f -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)Fragments " --log-level 7
-        $IPTABLES -A ext_to_int -f -j DROP
-
-        # Nmap FIN/URG/PSH
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN,URG,PSH -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)Nmap XMAS scan " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN,URG,PSH -j DROP
-
-        # Nmap Stealth XMAS-PSH scan
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)XMAS-PSH scan " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
-
-        # NMAP FIN Stealth
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)FIN scan " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL FIN -j DROP
-
-
-        # SYN/RST
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,RST SYN,RST -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)SYN/RST scan " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
-
-        #SYN/FIN
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,FIN SYN,FIN -m limit --limit 5/m -j LOG  --log-prefix "$TITLE : (F)SYN/FIN scan " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
-
-        # Portscan,PoD
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL ALL -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)XMAS-tree scan " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL ALL -j DROP
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -m limit --limit 5/m -j LOG --log-prefix "$TITLE : (F)NULL scan  " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags ALL NONE -m conntrack ! --ctstate ESTABLISHED -j DROP
-
-        # Half open scan elleni vedelem
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 5/s -j LOG  --log-prefix "$TITLE : (F)H-open p-scan " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-flags SYN,ACK,FIN,RST RST -j DROP
-
-        # Log packets with bad flags
-        $IPTABLES -A ext_to_int -p tcp --tcp-option 64 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (F)Bad TCP f(64) " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-option 64 -j DROP
-        $IPTABLES -A ext_to_int -p tcp --tcp-option 128 -m limit --limit 3/m --limit-burst 1 -j LOG --log-prefix "$TITLE : (F)Bad TCP f(128) " --log-level 7
-        $IPTABLES -A ext_to_int -p tcp --tcp-option 128 -j DROP
 
         # Log invalid packets
         $IPTABLES -A to_ext -p tcp -m conntrack --ctstate INVALID -m limit --limit 1/m --limit-burst 2 -j LOG --log-prefix "$TITLE : (F)INVALID TCP " --log-level 7
